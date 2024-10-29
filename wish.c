@@ -19,15 +19,13 @@ void printError()
 
 void executeCommand(char **args, char *outputFile, int redirect)
 {
-    if (args[0] == NULL)
-    {
+    if (!args[0])
         return; // Empty command
-    }
 
     // Built-in commands
     if (strcmp(args[0], "exit") == 0)
     {
-        if (args[1] != NULL)
+        if (args[1])
         {
             printError(); // exit takes no arguments
         }
@@ -38,33 +36,23 @@ void executeCommand(char **args, char *outputFile, int redirect)
     }
     else if (strcmp(args[0], "cd") == 0)
     {
-        if (args[2] != NULL)
+        if (!args[1] || args[2])
         {
             printError();
         }
         else
         {
-            chdir(args[1]);
+            if (chdir(args[1]) != 0)
+                printError(); // Handle chdir failure
         }
     }
     else if (strcmp(args[0], "path") == 0)
     {
-        // Clear and update paths
-        for (int i = 0; i < MAX_PATHS; i++)
-            paths[i] = NULL;
-        for (int i = 1; args[i] != NULL && i < MAX_PATHS; i++)
-            if (args[i][0] == '/')
-            {
-                // Absolute path, add as is
-                paths[i - 1] = args[i];
-            }
-            else
-            {
-                // Relative path, construct full path
-                char *fullPath = malloc(strlen("./") + strlen(args[i]) + 1); // +1 for '\0'
-                sprintf(fullPath, "./%s", args[i]);
-                paths[i - 1] = fullPath;
-            }
+        memset(paths, 0, sizeof(paths)); // Clear paths
+        for (int i = 1; args[i] && i < MAX_PATHS; i++)
+        {
+            paths[i - 1] = strdup(args[i]); // Directly copy paths
+        }
     }
     else
     {
@@ -72,7 +60,7 @@ void executeCommand(char **args, char *outputFile, int redirect)
         pid_t pid = fork();
         if (pid == 0)
         {
-            // In child process: Handle redirection if needed
+            // Child process: Handle redirection if needed
             if (redirect)
             {
                 int fd = open(outputFile, O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU);
@@ -88,68 +76,54 @@ void executeCommand(char **args, char *outputFile, int redirect)
 
             // Try to execute command from each path
             char execPath[100];
-            int found = 0; // Flag to check if command was found in any path
-            for (int i = 0; paths[i] != NULL; i++)
+            for (int i = 0; paths[i]; i++)
             {
                 snprintf(execPath, sizeof(execPath), "%s/%s", paths[i], args[0]);
-                if (access(execPath, X_OK) == 0) // Check if the command exists and is executable
-                {
+                if (access(execPath, X_OK) == 0)
+                {                          // Check if the command exists and is executable
                     execv(execPath, args); // Attempt to execute command
-                    found = 1;             // Command found
                 }
             }
-            if (!found)
-            {
-                printError(); // If execv fails for all paths
-            }
+            printError(); // If execv fails for all paths
             exit(1);
         }
-        else if (pid > 0)
-        {
-            // In parent process: Wait for child process to complete
-            wait(NULL);
-        }
-        else
+        else if (pid < 0)
         {
             printError(); // Fork error
         }
+        // No wait(NULL) here; parent process continues to the next command
     }
 }
 
 void parseAndExecute(char *line)
 {
-    char *command;
-    char *saveptr; // Para mantener el estado entre llamadas a strtok_r
-    char *args[MAX_ARGS];
-    char *outputFile = NULL;
+    char *command, *saveptr, *args[MAX_ARGS], *outputFile = NULL;
     int redirect = 0;
-    
-    // Separar los comandos por '&'
+
+    // Split commands by '&'
     command = strtok_r(line, "&", &saveptr);
-    
-    while (command != NULL)
+
+    while (command)
     {
         char *token = strtok(command, " \t\n");
         int i = 0;
 
-        // Verificar si el primer token es '>' sin un comando previo
-        if (token != NULL && strcmp(token, ">") == 0)
+        if (token && strcmp(token, ">") == 0)
         {
             printError();
             return;
         }
 
-        // Parsear el comando y manejar redirección
-        while (token != NULL && i < MAX_ARGS)
+        // Parse command and handle redirection
+        while (token && i < MAX_ARGS)
         {
             if (strcmp(token, ">") == 0)
             {
-                redirect = 1;                  // Se detecta redirección
-                token = strtok(NULL, " \t\n"); // El siguiente token debería ser el archivo de salida
-                if (token == NULL || strtok(NULL, " \t\n") != NULL)
+                redirect = 1;                  // Redirection detected
+                token = strtok(NULL, " \t\n"); // Next token should be output file
+                if (!token || strtok(NULL, " \t\n"))
                 {
-                    // Error: sin archivo de salida o demasiados argumentos después de '>'
-                    printError();
+                    printError(); // Error: no output file or too many args
                     return;
                 }
                 outputFile = token;
@@ -158,16 +132,18 @@ void parseAndExecute(char *line)
             args[i++] = token;
             token = strtok(NULL, " \t\n");
         }
-        args[i] = NULL; // Null-terminar el array de argumentos
+        args[i] = NULL; // Null-terminate the argument array
 
-        // Ejecutar el comando actual
+        // Execute the command in the current process
         executeCommand(args, outputFile, redirect);
 
-        // Obtener el siguiente comando después del '&'
-        command = strtok_r(NULL, "&", &saveptr);
+        command = strtok_r(NULL, "&", &saveptr); // Get the next command
     }
-}
 
+    // Wait for all child processes to finish
+    while (wait(NULL) > 0)
+        ; // This will wait for all child processes
+}
 
 int main(int argc, char *argv[])
 {
